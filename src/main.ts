@@ -63,17 +63,20 @@ async function munge(filename: string) {
 
         if (footnoteId && Object.hasOwn(footnoteIdsToElements, footnoteId)) {
           const identifier = String(footnoteDefinitions.length + 1);
+          const def = {
+            type: "footnoteDefinition",
+            identifier,
+          } as FootnoteDefinition;
+          footnoteDefinitions.push(def);
+          // state.all() call has to happen after pushing to the footnote array
+          // if we're relying on footnote count, since it may (?) generate notes
+          // of its own
+          def.children = state.all(footnoteIdsToElements[footnoteId]) as any;
 
           const result = {
             type: "footnoteReference",
             identifier,
           } as FootnoteReference;
-
-          footnoteDefinitions.push({
-            type: "footnoteDefinition",
-            identifier,
-            children: state.all(footnoteIdsToElements[footnoteId]) as any,
-          });
 
           state.patch(node, result);
           return result;
