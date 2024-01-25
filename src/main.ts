@@ -8,7 +8,7 @@ import { visit } from "unist-util-visit";
 import { gfmFootnoteToMarkdown } from "mdast-util-gfm-footnote";
 
 import type { Element } from "hast";
-import type { Link } from "mdast";
+import type { FootnoteDefinition, FootnoteReference, Link, Root } from "mdast";
 
 const INPUT_DIR = "input";
 
@@ -47,7 +47,7 @@ async function munge(filename: string) {
   }
   const footnoteIdsToElements = await collectFootnotes(urls[0]);
 
-  const footnoteDefinitions = [];
+  const footnoteDefinitions: FootnoteDefinition[] = [];
 
   const mdast = toMdast(hast, {
     // adapted from
@@ -62,23 +62,39 @@ async function munge(filename: string) {
         const footnoteId = properties.href.split("#")[1];
 
         if (footnoteId && Object.hasOwn(footnoteIdsToElements, footnoteId)) {
-          console.log("it's a footnote!!");
-        } else {
-          // regular link
-          const children = state.all(node);
+          const identifier = String(footnoteDefinitions.length + 1);
+
           const result = {
-            type: "link",
-            url: state.resolve(String(properties.href ?? "") || null),
-            title: properties.title ? String(properties.title) : null,
-            children,
-          } as Link;
+            type: "footnoteReference",
+            identifier,
+          } as FootnoteReference;
+
+          footnoteDefinitions.push({
+            type: "footnoteDefinition",
+            identifier,
+            children: state.all(footnoteIdsToElements[footnoteId]) as any,
+          });
 
           state.patch(node, result);
           return result;
         }
+
+        // regular link
+        const children = state.all(node);
+        const result = {
+          type: "link",
+          url: state.resolve(String(properties.href ?? "") || null),
+          title: properties.title ? String(properties.title) : null,
+          children,
+        } as Link;
+
+        state.patch(node, result);
+        return result;
       },
     },
   });
+
+  (mdast as Root).children.push(...footnoteDefinitions);
 
   const md = toMarkdown(mdast, { extensions: [gfmFootnoteToMarkdown()] });
 
@@ -112,11 +128,11 @@ async function collectFootnotes(filename: string) {
     // the <a> without href is the footnote id.
     if (n.type !== "element" || n.tagName !== "p") return null;
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-    const firstChild = n.children.find(
-      (fc) => fc.type === "element",
-      // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-    ) as Element | undefined;
+    const i = n.children.findIndex((fc) => fc.type === "element");
+
+    if (i === -1) return null;
+
+    const firstChild = n.children[i] as Element;
 
     if (
       !firstChild ||
@@ -128,7 +144,36 @@ async function collectFootnotes(filename: string) {
       return null;
     }
 
-    return [firstChild.properties.id, n] as const;
+    const identifier = firstChild.properties.id;
+
+    const newNode = { ...n };
+
+    // remove whitespace
+    const children = newNode.children
+      .filter((c) => c.type !== "text" || c.value.trim().length > 0)
+      .map((c) => {
+        if (c.type !== "text") return c;
+
+        let value = c.value.trim();
+        if (value.startsWith(".")) {
+          value = value.slice(1);
+        }
+
+        return {
+          ...c,
+          value: value
+            .split("\n")
+            .map((l) => l.trim())
+            .join(" "),
+        };
+      });
+    newNode.children = children;
+
+    // FIXME: this is wrong and fragile, happens to work because footnotes all
+    // open with whitespace nodes that are filtered in the previous step
+    children.splice(i, 1);
+
+    return [identifier, newNode] as const;
   });
 
   const filtered = footnoteNodes.filter((n) => n) as [string, Element][];
