@@ -9,10 +9,11 @@ presently a few manual manipulations are required after conversion runs:
   be placed anywhere -- even in the middle of the document -- so in gfm they are
   "containers", like blockquotes.
 
-  the upshot is that **if the footnote contains multiple paragraphs**, **they
-  need to be indented to be considered part of the footnote**. otherwise those
-  paragraphs will be considered part of the main document, and will be shunted
-  upwards (to the end of the main document but before the footnotes).
+  the upshot is that **if the footnote contains multiple paragraphs**, **any
+  paragraphs after the first paragraphs need to be indented** (four spaces) **to
+  be considered part of the footnote**. otherwise those paragraphs will be
+  considered part of the main document, and will be shunted upwards (to the end
+  of the main document but before the footnotes).
 
 - images from the epub also need to be handled manually:
 
