@@ -7,12 +7,11 @@ import { toMarkdown } from "mdast-util-to-markdown";
 import { visit, SKIP } from "unist-util-visit";
 import { gfmFootnoteToMarkdown } from "mdast-util-gfm-footnote";
 
-import type { Element, Root as HastRoot } from "hast";
+import type { Root as HastRoot } from "hast";
 import type {
   FootnoteDefinition,
   FootnoteReference,
   Link,
-  Root,
   Html,
   Text,
 } from "mdast";
@@ -46,7 +45,12 @@ visit(chap, "link", (node, index, parent) => {
     );
   }
 
-  const desiredIdentifier = (node.children[0] as Text).value;
+  let desiredIdentifier = (node.children[0] as Text).value;
+
+  // HACK: asterisks have to be escaped, so let's name them this way.
+  if (desiredIdentifier === "*") {
+    desiredIdentifier = "ast1";
+  }
 
   let finalIdentifier;
 
@@ -62,7 +66,10 @@ visit(chap, "link", (node, index, parent) => {
     let i = 2;
     finalIdentifier = desiredIdentifier;
     while (usedIdentifiers.has(finalIdentifier)) {
-      finalIdentifier = desiredIdentifier.repeat(i);
+      finalIdentifier = desiredIdentifier.startsWith("ast")
+        ? `ast${i}`
+        : desiredIdentifier.repeat(i);
+
       i++;
     }
     usedIdentifiers.add(finalIdentifier);
@@ -79,21 +86,19 @@ visit(chap, "link", (node, index, parent) => {
 });
 
 // same for the footnotes, since footnotes contain references to other footnotes.
-// FIXME: mostly duplicated from above, turn into function
 visit(footnotes, "link", (node, index, parent) => {
   if (!parent || typeof index !== "number") return;
 
   const [file, target] = node.url.split("#");
 
-  // FIXME: this block is the only part that's different from the above
-  // `visit()` block over the main chapter.
-  if (file === file1) {
-    // simply remove links that return to the main file.
-    parent.children.splice(index, 1);
-    return SKIP;
-  }
+  // early out: simply remove links that return to the main file. they are
+  // always backlinks.
+  // if (file === file1) {
+  //   parent.children.splice(index, 1);
+  //   return SKIP;
+  // }
 
-  if (file !== file2) {
+  if (file !== file1 && file !== file2) {
     throw new Error(`External link to unknown file: "${file}"`);
   }
   if (!target) throw new Error(`No target for link: "${node.url}"`);
@@ -103,72 +108,145 @@ visit(footnotes, "link", (node, index, parent) => {
     );
   }
 
-  const desiredIdentifier = (node.children[0] as Text).value;
-
-  let finalIdentifier;
-
-  if (!usedIdentifiers.has(desiredIdentifier)) {
-    finalIdentifier = desiredIdentifier;
-    usedIdentifiers.add(desiredIdentifier);
-  } else {
-    if (Number.parseInt(desiredIdentifier)) {
-      throw new Error(
-        `Conflicting numbered footnote identifier: ${desiredIdentifier}`,
-      );
-    }
-    let i = 2;
-    finalIdentifier = desiredIdentifier;
-    while (usedIdentifiers.has(finalIdentifier)) {
-      finalIdentifier = desiredIdentifier.repeat(i);
-      i++;
-    }
-    usedIdentifiers.add(finalIdentifier);
+  // HACK: calibre generates an incorrect link to the first chapter
+  if ((node.children[0] as Text).value === "Chapter 1") {
+    parent.children[index] = node.children[0];
+    return SKIP;
   }
 
-  targetsToFinalIdentifiers.set(target, finalIdentifier);
-
-  parent.children[index] = {
-    type: "footnoteReference",
-    identifier: finalIdentifier,
-  } as FootnoteReference;
-
-  return SKIP;
-});
-
-// now walk the footnotes file and transform intermediate footnote nodes into
-// real footnote definitions using the agreed-upon identifiers.
-visit(footnotes, "html", (node, index, parent) => {
-  if (!parent || typeof index !== "number") {
-    throw new Error(`Unexpected structure:\n${JSON.stringify(node)}`);
+  // calibre generates anchors for every footnote ref (nevermind that this is
+  // totally unnecessary and redundant -- an <a> link with a href can already be
+  // an anchor, it doesn't need to be preceded by a href-less <a>). at this
+  // point all links should be preceded by a comment node generated in the
+  // hast->mdast pass by our custom handler for href-less <a> nodes.
+  //
+  // ie.
+  //
+  // <a id="0001"></a> <a href="file1.html#fn1">footnote 1</a>
+  //
+  // should now be
+  //
+  // <!-- 0001 --> [footnote 1](file1.html#fn1)
+  //
+  // (whitespace added for clarity.)
+  //
+  // our job now is to distinguish between links *to* footnotes (in mdast
+  // nomenclature "footnote references", henceforth "refs"), and footnotes
+  // proper (in mdast nomenclature "footnote definitions", henceforth "defs").
+  //
+  // - refs should have their comment node deleted; then they should be
+  //   converted to a ref node. this is the same as in the main chapter file
+  //   above.
+  //
+  // - defs should delete the link -- it's just a backlink to the ref, but gfm
+  //   footnotes handle that automatically so it generates garbage to keep them.
+  //   the comment should then be converted to a footnote def.
+  //
+  // the problem is, how do we distinguish between them? as far as i can tell
+  // there's two options:
+  //
+  // - we can look at the positioning of elements -- refs are within a <sup>
+  //   element (which the mdast conversion deletes). defs are the first child in
+  //   their parent (but refs sometimes are as well). we'd have to do some
+  //   additional bookkeeping involving manipulation of parents to mark this up.
+  //
+  // - we can look at whether an anchor has *already been referred to*. if we
+  //   walk the AST in order, refs will always precede their respective def. we
+  //   have to keep track of references anyway to ensure identifiers are named
+  //   in a consistent way, so we get this for free.
+  //
+  // we take the second approach here, then.
+  if (index < 1) {
+    throw new Error(
+      `Unexpected position for node: ${index}. Node:\n${JSON.stringify(node)}`,
+    );
+  }
+  const prevSib = parent.children[index - 1];
+  if (prevSib.type !== "html") {
+    throw new Error(
+      `Unexpected previous sibling type: ${prevSib.type}. Node:\n${JSON.stringify(node)}`,
+    );
   }
 
-  const v = node.value;
+  const v = prevSib.value;
   if (!v.startsWith("<!-- ") || !v.endsWith(" -->")) {
-    throw new Error(`Unexpected HTML node:\n${JSON.stringify(node)}`);
+    throw new Error(
+      `Unexpected non-comment HTML node:\n${JSON.stringify(prevSib)}`,
+    );
   }
   const maybeId = v.slice(5, -4);
 
   const identifier = targetsToFinalIdentifiers.get(maybeId);
 
-  if (!identifier) {
-    throw new Error(`No reference found to anchor "${maybeId}"!`);
+  if (identifier) {
+    // we are a footnote def.
+    parent.children[index] = {
+      type: "footnoteDefinition",
+      identifier,
+      children: [],
+    } as FootnoteDefinition;
+  } else {
+    // we are a footnote ref.
+
+    // this logic is the same as for visitor that walks the main chapter file.
+    let desiredIdentifier = (node.children[0] as Text).value;
+
+    // HACK: asterisks have to be escaped, so let's name them this way. in
+    // footnotes, we can take the opportunity to name them slightly
+    // differently...
+    const asteriskPrefix = "fn-ast";
+    if (desiredIdentifier === "*") {
+      desiredIdentifier = `${asteriskPrefix}1`;
+    }
+
+    let finalIdentifier;
+
+    if (!usedIdentifiers.has(desiredIdentifier)) {
+      finalIdentifier = desiredIdentifier;
+      usedIdentifiers.add(desiredIdentifier);
+    } else {
+      if (Number.parseInt(desiredIdentifier)) {
+        throw new Error(
+          `Conflicting numbered footnote identifier: ${desiredIdentifier}`,
+        );
+      }
+      let i = 2;
+      finalIdentifier = desiredIdentifier;
+      while (usedIdentifiers.has(finalIdentifier)) {
+        finalIdentifier = desiredIdentifier.startsWith(asteriskPrefix)
+          ? `${asteriskPrefix}${i}`
+          : desiredIdentifier.repeat(i);
+
+        i++;
+      }
+      usedIdentifiers.add(finalIdentifier);
+    }
+
+    targetsToFinalIdentifiers.set(target, finalIdentifier);
+
+    parent.children[index] = {
+      type: "footnoteReference",
+      identifier: finalIdentifier,
+    } as FootnoteReference;
   }
+  parent.children.splice(index - 1, 1);
 
-  parent.children[index] = {
-    type: "footnoteDefinition",
-    identifier,
-    children: [],
-  } as FootnoteDefinition;
-
-  return SKIP;
+  return [SKIP, index];
 });
 
+const md1 = toMarkdown(chap, { extensions: [gfmFootnoteToMarkdown()] });
+let md2 = toMarkdown(footnotes, { extensions: [gfmFootnoteToMarkdown()] });
+
+// kludge: extra periods are left in the footnote defs.
+md2 = md2.replaceAll(/^(\[\^[^\]]+\]:)\./gm, (_, group) => group);
+
+const finalMd = md1.concat("\n\n", md2);
+
+// for debugging
 await writeMd(chap, file1);
 await writeMd(footnotes, file2);
 
-const md1 = toMarkdown(chap, { extensions: [gfmFootnoteToMarkdown()] });
-const md2 = toMarkdown(footnotes, { extensions: [gfmFootnoteToMarkdown()] });
-await writeFile(`parts-combined.md`, md1.concat("\n\n", md2));
+await writeFile(`parts-combined.md`, finalMd);
 
 console.log("done.");
 
@@ -243,11 +321,59 @@ function convertToMdast(hast: HastRoot, isFootnotesFile = false) {
         if (!properties.href || typeof properties.href !== "string") {
           // if we're in a footnotes file and it's an anchor (ie. it has an id)
           // convert it to a comment. we'll use that in the next ast pass.
+          //
+          // we don't convert them to footnote definitions immediately since it
+          // involves manipulating more than one node (the href-less,
+          // content-less <a> tag, where we are now, and its immediate sibling,
+          // which is an <a> tag with an href).
+          //
+          // the handler definition we're in right now doesn't allow
+          // manipulating multiple nodes at once -- it's only concerned with how
+          // to convert the node it's presently visiting.
+          //
+          // on the other hand, we can't just skip this step -- otherwise the
+          // conversion from html ast to md ast will generate nonsense for these
+          // <a> tags without hrefs. so we need to convert them to an
+          // intermediate format for now.
           if (
             isFootnotesFile &&
             properties.id &&
             typeof properties.id === "string"
           ) {
+            // this is a huge headache. we need to preserve all anchors since
+            // some of them will be converted to footnote definitions.
+            //
+            // but there are also some anchors that are useless, since they are
+            // not footnote defitions and instead precede footnote *references*
+            // (that is, they are a link to a footnote, not a footnote itself).
+            //
+            // we don't have enough context to determine which is which right
+            // now -- footnote definition anchors are the first sibling in the
+            // group, but some footnote reference anchors are the first sibling
+            // in a group as well.
+            //
+            // the only way to determine whether something is a footnote
+            // definition is to see whether something has *already referenced
+            // its id* -- whether there's a footnote ref above it that is
+            // pointing to it.
+            // const sibs = parent!.children;
+            // const next = sibs[sibs.indexOf(node) + 1];
+            // if (
+            //   next.type !== "element" ||
+            //   next.tagName !== "a" ||
+            //   typeof next.properties.href !== "string"
+            // ) {
+            //   throw new Error(
+            //     `Unexpected anchor without link sibling:\n${JSON.stringify(node)}`,
+            //   );
+            // }
+
+            // const [file, target] = next.properties.href.split("#");
+
+            // const result = {
+            //   type: "html",
+            //   value: `<!-- ref[${properties.id},${file},${target}] -->`,
+            // } as Html;
             const result = {
               type: "html",
               value: `<!-- ${properties.id} -->`,
