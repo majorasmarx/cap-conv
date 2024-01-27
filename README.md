@@ -25,3 +25,12 @@ presently a few manual manipulations are required after conversion runs:
 
   - if they're other images, they should just be moved to correct references.
     haven't seen any of these yet.
+
+- some headings might not have the right weight (eg. <h5> instead of <h2>) or
+  may not be present.
+
+- no frontmatter is created, so any metadata for other sites will need to be
+  added.
+
+- the footnotes are simply concatenated to the main chapter to make things work,
+  but may contain a duplicate of the chapter title.
