@@ -17,6 +17,7 @@ import type {
 } from "mdast";
 
 const INPUT_DIR = "input";
+const OUTPUT_DIR = "output";
 
 const file1 = "part0014.html";
 const file2 = "part0070.html";
@@ -243,10 +244,14 @@ md2 = md2.replaceAll(/^(\[\^[^\]]+\]:)\./gm, (_, group) => group);
 const finalMd = md1.concat("\n\n", md2);
 
 // for debugging
+async function writeMd(mdast: ReturnType<typeof toMdast>, filename: string) {
+  const md = toMarkdown(mdast, { extensions: [gfmFootnoteToMarkdown()] });
+  await writeFile(join(OUTPUT_DIR, `${basename(filename, ".html")}.md`), md);
+}
 await writeMd(chap, file1);
 await writeMd(footnotes, file2);
 
-await writeFile(`parts-combined.md`, finalMd);
+await writeFile(join(OUTPUT_DIR, `parts-combined.md`), finalMd);
 
 console.log("done.");
 
@@ -271,11 +276,6 @@ async function loadMungeConvert(filename: string, isFootnotesFile = false) {
   // const footnoteIdsToElements = await collectFootnotes(urls[0]);
 
   return convertToMdast(hast, isFootnotesFile);
-}
-
-async function writeMd(mdast: ReturnType<typeof toMdast>, filename: string) {
-  const md = toMarkdown(mdast, { extensions: [gfmFootnoteToMarkdown()] });
-  await writeFile(`${basename(filename, ".html")}.md`, md);
 }
 
 function collectReferencedUrls(hast: HastRoot, isFootnotesFile = false) {
