@@ -260,7 +260,38 @@ async function loadMungeConvert(filename: string, isFootnotesFile = false) {
 
   const resolvedFilename = join(INPUT_DIR, filename);
 
-  const inFile = await readFile(resolvedFilename, "utf8");
+  let inFile = await readFile(resolvedFilename, "utf8");
+
+  // i truly despise this: hast uses parse5, which refuses to tolerate xhtml.
+  //
+  // at first we were working with a calibre-generated epub, which was more or
+  // less normal html (albeit with suboptimal, noisy output).
+  //
+  // but epubs seem to generally be in xhtml format, which notably supports
+  // self-closing tags for all elements. for example, this is valid in xhtml:
+  //
+  // <a id="whatever" />
+  //
+  // see discussion here: https://stackoverflow.com/a/206409
+  //
+  // but parse5 interprets the above example <a> as an opening tag (that is, it
+  // ignores the slash at the end), leading to elements that follow the <a>
+  // being placed inside of it until the parser encounters a closing </a>.
+  // obviously, this leads to a malformed ast.
+  //
+  // see discussion here: https://github.com/inikulin/parse5/issues/597
+  //
+  // as a workaround, we can use htmlparser2, which can parse in a tolerant way
+  // more similar to a real browser, to roundtrip xhtml to html.
+  if (filename.endsWith(".xhtml")) {
+    const { parseDocument } = await import("htmlparser2");
+    const { default: serialize } = await import("dom-serializer");
+
+    inFile = serialize(parseDocument(inFile, { xmlMode: true }), {
+      xmlMode: false,
+      selfClosingTags: true,
+    });
+  }
 
   const hast = fromHtml(inFile, { fragment: true });
 

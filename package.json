@@ -8,8 +8,10 @@
     "dev": "tsx watch src/main.ts"
   },
   "dependencies": {
+    "dom-serializer": "^2.0.0",
     "hast-util-from-html": "^2.0.1",
     "hast-util-to-mdast": "^10.1.0",
+    "htmlparser2": "^9.1.0",
     "mdast-util-gfm-footnote": "^2.0.0",
     "mdast-util-to-markdown": "^2.1.0",
     "unist-util-visit": "^5.0.0"
